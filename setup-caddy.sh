@@ -1,105 +1,156 @@
-#!/bin/bash
-# Caddy 反向代理配置工具 (Debian/Ubuntu)
-#===================================
-# 一键安装:
-#   wget -O ca https://raw.githubusercontent.com/merlin-node/caddy/main/setup-caddy.sh && chmod +x ca && sudo mv ca /usr/local/bin/ca
-# 之后在 VPS 里直接输入 ca 即可运行
-#===================================
+#!/usr/bin/env bash
+# =============================================================================
+# Caddy Script v1.0 By Merlin
+# Caddy 反向代理一键配置 (Debian 12/13)
+# 调用:    ca
+# 安装:    wget -O ca https://raw.githubusercontent.com/merlin-node/caddy/main/setup-caddy.sh && chmod +x ca && sudo mv ca /usr/local/bin/ca
+# =============================================================================
 
-set -e
+set -o pipefail
+
+SCRIPT_VERSION="1.0"
+SCRIPT_AUTHOR="Merlin"
+SCRIPT_UPDATE_URL="https://raw.githubusercontent.com/merlin-node/caddy/main/setup-caddy.sh"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'
+BOLD='\033[1m'; NC='\033[0m'
 
 CADDYFILE="/etc/caddy/Caddyfile"
 META_DIR="/etc/caddy/.meta"
+META_FILE="${META_DIR}/current"
+CADDY_LOG_DIR="/var/log/caddy"
+CA_SCRIPT_PATH="/usr/local/bin/ca"
 
-# ---------- 工具函数 ----------
+# =============================================================================
+# 输出工具
+# =============================================================================
+msg()  { echo -e "${GREEN}[*]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+err()  { echo -e "${RED}[x]${NC} $*"; }
+ok()   { echo -e "${GREEN}[成功]${NC} $*"; }
+
+term_width() {
+    local w
+    w=$(tput cols 2>/dev/null || echo 60)
+    (( w < 40 )) && w=40
+    (( w > 80 )) && w=80
+    echo "$w"
+}
+
+hr() {
+    local w; w=$(term_width)
+    printf "${BLUE}%${w}s${NC}\n" '' | tr ' ' '='
+}
+
+sec() {
+    local title="$1" w side_eq
+    w=$(term_width)
+    local bytes chars non_ascii_chars ascii_chars visual
+    bytes=$(printf '%s' " ${title} " | wc -c)
+    chars=$(printf '%s' " ${title} " | wc -m)
+    non_ascii_chars=$(( (bytes - chars) / 2 ))
+    ascii_chars=$(( chars - non_ascii_chars ))
+    visual=$(( ascii_chars + non_ascii_chars * 2 ))
+    side_eq=$(( (w - visual) / 2 ))
+    (( side_eq < 3 )) && side_eq=3
+    local left right
+    left=$(printf "%${side_eq}s" '' | tr ' ' '=')
+    right=$(printf "%${side_eq}s" '' | tr ' ' '=')
+    echo -e "${BLUE}${left} ${BOLD}${title}${NC}${BLUE} ${right}${NC}"
+}
 
 pause() {
-    echo ""
-    read -p "按回车返回主菜单..."
+    echo
+    read -rp "$(echo -e "${CYAN}按回车键继续...${NC}")" _ || true
 }
 
-require_root() {
-    if [ "$EUID" -ne 0 ]; then
-        echo "[错误] 请用 sudo 或 root 运行: sudo ca"
-        exit 1
+# =============================================================================
+# 前置检查
+# =============================================================================
+need_root() {
+    [[ $EUID -eq 0 ]] || { err "请用 root 运行"; exit 1; }
+}
+
+check_debian() {
+    [[ -f /etc/os-release ]] || { err "无法识别系统"; exit 1; }
+    . /etc/os-release
+    if [[ "$ID" != "debian" && "$ID" != "ubuntu" ]]; then
+        warn "本脚本仅在 Debian/Ubuntu 测试过，当前: $ID $VERSION_ID"
+        read -rp "仍要继续? [y/N]: " a
+        [[ "$a" =~ ^[Yy]$ ]] || exit 0
     fi
 }
 
-# 自动检测并安装 Caddy
-ensure_caddy_installed() {
+# =============================================================================
+# Caddy 安装管理
+# =============================================================================
+install_caddy() {
     if command -v caddy >/dev/null 2>&1; then
-        return
-    fi
-
-    clear
-    echo "========================================"
-    echo "  检测到 Caddy 未安装"
-    echo "========================================"
-    echo ""
-    echo "本工具需要 Caddy 才能工作。"
-    echo "将通过官方源安装 Caddy（来自 cloudsmith.io/~caddy）。"
-    echo ""
-    read -p "是否现在安装？[Y/n]: " CONFIRM
-    CONFIRM=${CONFIRM:-Y}
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo "已取消，无法继续。"
-        exit 1
-    fi
-
-    echo ""
-    echo "→ 安装依赖..."
-    apt update
-    apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
-
-    echo "→ 添加 Caddy 官方源..."
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-        | tee /etc/apt/sources.list.d/caddy-stable.list
-
-    echo "→ 安装 Caddy..."
-    apt update
-    apt install -y caddy
-
-    mkdir -p /var/log/caddy "$META_DIR"
-
-    echo ""
-    echo "Caddy 安装完成。"
-    pause
-}
-
-# 端口占用检测（仅本机后端时才有意义）
-check_port_in_use() {
-    local ip="$1"
-    local port="$2"
-    # 远程后端不检查本机端口
-    if [ "$ip" != "127.0.0.1" ] && [ "$ip" != "localhost" ] && [ "$ip" != "::1" ]; then
         return 0
     fi
-    if ss -tlnp 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}$"; then
-        echo ""
-        echo "[警告] 本机端口 ${port} 已被占用:"
-        ss -tlnp | grep -E "[:.]${port}\b" || true
-        echo ""
-        read -p "仍要继续吗？[y/N]: " GO
-        if [[ ! "$GO" =~ ^[Yy]$ ]]; then
-            return 1
-        fi
+    msg "安装依赖..."
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1
+
+    msg "添加 Caddy 官方源..."
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+        > /etc/apt/sources.list.d/caddy-stable.list 2>/dev/null
+
+    msg "安装 Caddy..."
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y caddy >/dev/null 2>&1
+
+    mkdir -p "$CADDY_LOG_DIR" "$META_DIR"
+    ok "Caddy 安装完成"
+}
+
+caddy_version() {
+    caddy version 2>/dev/null | awk '{print $1}' | head -1
+}
+
+# =============================================================================
+# 工具函数
+# =============================================================================
+
+# 检查本机后端端口是否有服务监听
+# 本机后端必须有进程在监听，否则反代过去 502
+check_backend_port() {
+    local ip="$1" port="$2"
+    case "$ip" in
+        127.0.0.1|localhost|::1) ;;
+        *) return 0 ;;   # 远程后端不检查本机
+    esac
+
+    local listener
+    listener=$(ss -tlnp 2>/dev/null | awk -v p=":$port" '$4 ~ p"$" {print; exit}')
+
+    if [[ -z "$listener" ]]; then
+        warn "本机端口 ${port} 当前无服务监听"
+        echo -e "  ${YELLOW}Caddy 反代过去会返回错误，请先启动后端服务${NC}"
+        echo
+        read -rp "$(echo -e "${CYAN}仍要继续? [y/N]: ${NC}")" go
+        [[ "$go" =~ ^[Yy]$ ]] || return 1
+    else
+        local proc
+        proc=$(echo "$listener" | grep -oP '"\K[^"]+' | head -1)
+        echo -e "  ${GREEN}[√]${NC} 后端服务已监听：${proc:-unknown} on :${port}"
     fi
     return 0
 }
 
-# 写入 Caddyfile + 元数据，校验，reload
 write_and_apply() {
     local svc="$1" domain="$2" ip="$3" port="$4" timeout="$5"
 
-    mkdir -p "$(dirname "$CADDYFILE")" "$META_DIR" /var/log/caddy
+    mkdir -p "$(dirname "$CADDYFILE")" "$META_DIR" "$CADDY_LOG_DIR"
 
     cat > "$CADDYFILE" << EOF
-# 由 ca 工具生成，请勿手动修改注释
+# 由 ca 工具生成，元数据存于 ${META_FILE}
 ${domain} {
     log {
-        output file /var/log/caddy/${svc}.log {
+        output file ${CADDY_LOG_DIR}/${svc}.log {
             roll_size 10mb
             roll_keep 5
         }
@@ -119,8 +170,7 @@ ${domain} {
 }
 EOF
 
-    # 元数据单独存，避免解析 Caddyfile 注释的脆弱性
-    cat > "${META_DIR}/current" << EOF
+    cat > "$META_FILE" << EOF
 SVC_NAME=${svc}
 DOMAIN=${domain}
 BACKEND_IP=${ip}
@@ -128,247 +178,417 @@ BACKEND_PORT=${port}
 TIMEOUT=${timeout}
 EOF
 
-    echo ""
-    echo "→ 校验配置..."
-    if ! caddy validate --config "$CADDYFILE" --adapter caddyfile 2>&1; then
-        echo ""
-        echo "[错误] 配置校验失败，未应用。"
+    echo
+    msg "校验配置..."
+    if ! caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1; then
+        err "配置校验失败"
+        caddy validate --config "$CADDYFILE" --adapter caddyfile 2>&1 | sed 's/^/  /'
         return 1
     fi
+    ok "校验通过"
 
-    echo "→ 重载 Caddy..."
+    msg "应用配置..."
     systemctl enable caddy >/dev/null 2>&1 || true
     if systemctl is-active --quiet caddy; then
         systemctl reload caddy
+        ok "Caddy 已重载"
     else
         systemctl start caddy
+        ok "Caddy 已启动"
     fi
-
-    echo ""
-    echo "已生效。配置: $CADDYFILE"
 }
 
-# 读取当前元数据到全局变量
 load_meta() {
-    if [ ! -f "${META_DIR}/current" ]; then
-        return 1
-    fi
-    # shellcheck disable=SC1091
-    source "${META_DIR}/current"
+    [[ -f "$META_FILE" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$META_FILE"
     return 0
 }
 
-# ---------- 菜单功能 ----------
+# =============================================================================
+# 菜单：生成 / 查看 / 更改 配置
+# =============================================================================
+menu_add() {
+    clear; show_banner
+    sec "生成 Caddyfile"
 
-generate_caddyfile() {
-    clear
-    echo "========================================"
-    echo "  生成 Caddyfile"
-    echo "========================================"
-    echo ""
-
-    if [ -f "$CADDYFILE" ]; then
-        echo "[提示] 已存在配置: $CADDYFILE"
-        echo "继续将覆盖现有配置。"
-        echo ""
-        read -p "是否继续？[y/N]: " GO
-        if [[ ! "$GO" =~ ^[Yy]$ ]]; then
-            return
-        fi
-        echo ""
+    if [[ -f "$CADDYFILE" ]] && load_meta; then
+        echo -e "  ${YELLOW}已存在配置${NC}"
+        echo
+        echo "  服务:     ${SVC_NAME}"
+        echo "  域名:     ${DOMAIN}"
+        echo "  后端:     ${BACKEND_IP}:${BACKEND_PORT}"
+        echo
+        echo -e "  ${YELLOW}继续将覆盖现有配置${NC}"
+        hr
+        read -rp "$(echo -e "${CYAN}是否继续? [y/N]: ${NC}")" go
+        [[ "$go" =~ ^[Yy]$ ]] || return
+        echo
     fi
 
-    read -p "服务名称 (用于日志文件名，例如 myapp): " SVC_NAME
-    [ -z "$SVC_NAME" ] && { echo "[错误] 服务名称不能为空"; pause; return; }
+    local svc domain ip port timeout
+    read -rp "$(echo -e "${CYAN}服务名称（用于日志文件名，例如 myapp）: ${NC}")" svc
+    [[ -z "$svc" ]] && { err "服务名称不能为空"; pause; return; }
 
-    read -p "域名 (例如 api.example.com): " DOMAIN
-    [ -z "$DOMAIN" ] && { echo "[错误] 域名不能为空"; pause; return; }
+    read -rp "$(echo -e "${CYAN}域名（例如 api.example.com）: ${NC}")" domain
+    [[ -z "$domain" ]] && { err "域名不能为空"; pause; return; }
 
-    echo ""
-    read -p "后端 IP [127.0.0.1]: " BACKEND_IP
-    BACKEND_IP=${BACKEND_IP:-127.0.0.1}
+    read -rp "$(echo -e "${CYAN}后端 IP [${NC}127.0.0.1${CYAN}]: ${NC}")" ip
+    ip="${ip:-127.0.0.1}"
 
-    echo ""
-    read -p "后端端口: " BACKEND_PORT
-    [ -z "$BACKEND_PORT" ] && { echo "[错误] 端口不能为空"; pause; return; }
-
-    if ! check_port_in_use "$BACKEND_IP" "$BACKEND_PORT"; then
-        pause
-        return
+    read -rp "$(echo -e "${CYAN}后端端口: ${NC}")" port
+    [[ -z "$port" ]] && { err "端口不能为空"; pause; return; }
+    echo
+    if ! check_backend_port "$ip" "$port"; then
+        pause; return
     fi
+    echo
 
-    echo ""
-    read -p "超时(秒) [300]: " TIMEOUT
-    TIMEOUT=${TIMEOUT:-300}
+    read -rp "$(echo -e "${CYAN}超时(秒) [${NC}300${CYAN}]: ${NC}")" timeout
+    timeout="${timeout:-300}"
 
-    if write_and_apply "$SVC_NAME" "$DOMAIN" "$BACKEND_IP" "$BACKEND_PORT" "$TIMEOUT"; then
-        echo ""
-        echo "========================================"
-        echo "  完成"
-        echo "========================================"
-        echo "  服务: $SVC_NAME"
-        echo "  域名: https://$DOMAIN"
-        echo "  后端: $BACKEND_IP:$BACKEND_PORT"
-        echo "  超时: ${TIMEOUT}s"
-        echo "  日志: /var/log/caddy/${SVC_NAME}.log"
+    if write_and_apply "$svc" "$domain" "$ip" "$port" "$timeout"; then
+        echo
+        hr
+        echo -e "  ${GREEN}[√]${NC} 部署完成"
+        echo
+        echo "  域名:     https://${domain}"
+        echo "  后端:     ${ip}:${port}"
+        echo "  超时:     ${timeout}s"
+        echo "  日志:     ${CADDY_LOG_DIR}/${svc}.log"
+        hr
     fi
     pause
 }
 
-view_caddyfile() {
-    clear
-    echo "========================================"
-    echo "  查看配置"
-    echo "========================================"
-    echo ""
+menu_view() {
+    clear; show_banner
+    sec "查看配置"
 
     if ! load_meta; then
-        echo "[错误] 未找到配置元数据。请先用菜单 ① 生成。"
-        pause
-        return
+        warn "尚未生成配置"
+        echo -e "  ${YELLOW}请先用主菜单的「添加配置」创建${NC}"
+        pause; return
     fi
 
-    echo "  服务名称: $SVC_NAME"
-    echo "  域名:     $DOMAIN"
-    echo "  后端 IP:  $BACKEND_IP"
-    echo "  后端端口: $BACKEND_PORT"
+    echo "  服务名称: ${SVC_NAME}"
+    echo "  域名:     ${DOMAIN}"
+    echo "  后端 IP:  ${BACKEND_IP}"
+    echo "  后端端口: ${BACKEND_PORT}"
     echo "  超时:     ${TIMEOUT}s"
-    echo ""
-    echo "--- $CADDYFILE ---"
-    echo ""
-    if [ -f "$CADDYFILE" ]; then
-        cat "$CADDYFILE"
+    echo "  日志:     ${CADDY_LOG_DIR}/${SVC_NAME}.log"
+    echo
+    if systemctl is-active --quiet caddy; then
+        echo -e "  状态:     ${GREEN}running${NC}"
     else
-        echo "[警告] $CADDYFILE 不存在"
+        echo -e "  状态:     ${RED}stopped${NC}"
     fi
-    echo ""
-    echo "--- Caddy 服务状态 ---"
-    systemctl is-active caddy && echo "running" || echo "stopped"
+    hr
+    echo -e "  ${BLUE}>>> ${BOLD}${CADDYFILE}${NC}"
+    echo
+    if [[ -f "$CADDYFILE" ]]; then
+        sed 's/^/  /' "$CADDYFILE"
+    else
+        err "文件不存在"
+    fi
     pause
 }
 
-edit_caddyfile() {
-    clear
-    echo "========================================"
-    echo "  更改配置"
-    echo "========================================"
-    echo ""
+menu_edit() {
+    while :; do
+        clear; show_banner
+        sec "更改配置"
 
-    if ! load_meta; then
-        echo "[错误] 未找到配置元数据。请先用菜单 ① 生成。"
-        pause
-        return
-    fi
+        if ! load_meta; then
+            warn "尚未生成配置"
+            echo -e "  ${YELLOW}请先用主菜单的「添加配置」创建${NC}"
+            pause; return
+        fi
 
-    echo "  1) 服务名称: $SVC_NAME"
-    echo "  2) 域名:     $DOMAIN"
-    echo "  3) 后端 IP:  $BACKEND_IP"
-    echo "  4) 后端端口: $BACKEND_PORT"
-    echo "  5) 超时:     ${TIMEOUT}s"
-    echo "  0) 返回"
-    echo "========================================"
-    echo ""
-    read -p "选择要修改的项 [0-5]: " EDIT_CHOICE
-
-    case $EDIT_CHOICE in
-        0) return ;;
-        1)
-            read -p "服务名称 [$SVC_NAME]: " NEW_VAL
-            [ -n "$NEW_VAL" ] && SVC_NAME="$NEW_VAL"
-            ;;
-        2)
-            read -p "域名 [$DOMAIN]: " NEW_VAL
-            [ -n "$NEW_VAL" ] && DOMAIN="$NEW_VAL"
-            ;;
-        3)
-            read -p "后端 IP [$BACKEND_IP]: " NEW_VAL
-            [ -n "$NEW_VAL" ] && BACKEND_IP="$NEW_VAL"
-            ;;
-        4)
-            read -p "后端端口 [$BACKEND_PORT]: " NEW_VAL
-            if [ -n "$NEW_VAL" ]; then
-                if ! check_port_in_use "$BACKEND_IP" "$NEW_VAL"; then
-                    pause
-                    return
+        echo "  1) 服务名称   ${SVC_NAME}"
+        echo "  2) 域名       ${DOMAIN}"
+        echo "  3) 后端 IP    ${BACKEND_IP}"
+        echo "  4) 后端端口   ${BACKEND_PORT}"
+        echo "  5) 超时       ${TIMEOUT}s"
+        echo "  0) 返回上一页"
+        hr
+        local c new
+        read -rp "$(echo -e "${CYAN}选择要修改的项 [0-5]: ${NC}")" c
+        case "$c" in
+            0|"") return ;;
+            1)
+                read -rp "$(echo -e "${CYAN}服务名称 [${NC}${SVC_NAME}${CYAN}]: ${NC}")" new
+                SVC_NAME="${new:-$SVC_NAME}"
+                ;;
+            2)
+                read -rp "$(echo -e "${CYAN}域名 [${NC}${DOMAIN}${CYAN}]: ${NC}")" new
+                DOMAIN="${new:-$DOMAIN}"
+                ;;
+            3)
+                read -rp "$(echo -e "${CYAN}后端 IP [${NC}${BACKEND_IP}${CYAN}]: ${NC}")" new
+                BACKEND_IP="${new:-$BACKEND_IP}"
+                ;;
+            4)
+                read -rp "$(echo -e "${CYAN}后端端口 [${NC}${BACKEND_PORT}${CYAN}]: ${NC}")" new
+                new="${new:-$BACKEND_PORT}"
+                if [[ "$new" != "$BACKEND_PORT" ]]; then
+                    echo
+                    if ! check_backend_port "$BACKEND_IP" "$new"; then
+                        pause; continue
+                    fi
                 fi
-                BACKEND_PORT="$NEW_VAL"
-            fi
-            ;;
-        5)
-            read -p "超时(秒) [$TIMEOUT]: " NEW_VAL
-            [ -n "$NEW_VAL" ] && TIMEOUT="$NEW_VAL"
-            ;;
-        *)
-            echo "无效选项"; pause; return
-            ;;
-    esac
+                BACKEND_PORT="$new"
+                ;;
+            5)
+                read -rp "$(echo -e "${CYAN}超时(秒) [${NC}${TIMEOUT}${CYAN}]: ${NC}")" new
+                TIMEOUT="${new:-$TIMEOUT}"
+                ;;
+            *) err "无效"; sleep 1; continue ;;
+        esac
 
-    write_and_apply "$SVC_NAME" "$DOMAIN" "$BACKEND_IP" "$BACKEND_PORT" "$TIMEOUT"
-    pause
-}
-
-update_caddy() {
-    clear
-    echo "========================================"
-    echo "  更新 Caddy"
-    echo "========================================"
-    echo ""
-    apt update
-    apt install --only-upgrade -y caddy
-    echo ""
-    echo "Caddy 已更新到最新版。"
-    pause
-}
-
-uninstall_caddy() {
-    clear
-    echo "========================================"
-    echo "  卸载 Caddy"
-    echo "========================================"
-    echo ""
-    echo "这将完全移除 Caddy、配置文件和日志，是否继续？"
-    read -p "输入 yes 确认卸载: " CONFIRM
-    if [ "$CONFIRM" != "yes" ]; then
-        echo "已取消。"
+        write_and_apply "$SVC_NAME" "$DOMAIN" "$BACKEND_IP" "$BACKEND_PORT" "$TIMEOUT"
         pause
+    done
+}
+
+# =============================================================================
+# 菜单：Caddy 服务管理
+# =============================================================================
+view_log() {
+    local n="${1:-50}"
+    if ! load_meta; then
+        err "尚未生成配置，无可查看日志"
         return
     fi
-    systemctl stop caddy 2>/dev/null || true
-    systemctl disable caddy 2>/dev/null || true
-    apt purge -y caddy 2>/dev/null || true
-    rm -rf /etc/caddy /var/log/caddy /var/lib/caddy 2>/dev/null || true
-    echo ""
-    echo "Caddy 已卸载。"
+    local f="${CADDY_LOG_DIR}/${SVC_NAME}.log"
+    if [[ -s "$f" ]]; then
+        echo -e "  ${BLUE}>>> ${BOLD}${f}${NC}  (最近 ${n} 行)"
+        echo
+        tail -n "$n" "$f" | sed 's/^/  /'
+    else
+        warn "Caddy 文件日志为空，改读 systemd 日志"
+        echo
+        journalctl -u caddy -n "$n" --no-pager | sed 's/^/  /'
+    fi
+}
+
+menu_caddy() {
+    while :; do
+        clear; show_banner
+        sec "Caddy 服务管理"
+        local active="${RED}stopped${NC}" enabled="${RED}未启用${NC}"
+        local ver
+        systemctl is-active --quiet caddy && active="${GREEN}running${NC}"
+        systemctl is-enabled --quiet caddy 2>/dev/null && enabled="${GREEN}开机自启${NC}"
+        ver=$(caddy_version)
+        echo -e "  状态: ${active}    自启: ${enabled}    版本: ${ver:-未知}"
+        hr
+        echo "  1) 启动 Caddy"
+        echo "  2) 停止 Caddy"
+        echo "  3) 重启 Caddy"
+        echo "  4) 查看 systemd 状态"
+        echo "  5) 最近 50 行日志"
+        echo "  6) 实时跟踪日志 (Ctrl+C 退出)"
+        echo "  7) 清空日志文件"
+        echo "  8) 更新 Caddy 到最新版"
+        echo "  0) 返回上一页"
+        hr
+        local c
+        read -rp "$(echo -e "${CYAN}请选择 [0-8]: ${NC}")" c
+        case "$c" in
+            1) systemctl start caddy && ok "已启动"; sleep 1 ;;
+            2) systemctl stop caddy && ok "已停止"; sleep 1 ;;
+            3) systemctl restart caddy && ok "已重启"; sleep 1 ;;
+            4) clear; systemctl status caddy --no-pager -l | head -n 30; pause ;;
+            5) clear; view_log 50; pause ;;
+            6) clear; echo "Ctrl+C 退出"
+               if load_meta && [[ -s "${CADDY_LOG_DIR}/${SVC_NAME}.log" ]]; then
+                   tail -f "${CADDY_LOG_DIR}/${SVC_NAME}.log"
+               else
+                   journalctl -u caddy -f
+               fi ;;
+            7)
+                if load_meta; then
+                    : > "${CADDY_LOG_DIR}/${SVC_NAME}.log"
+                    ok "日志已清空"
+                else
+                    err "无配置可清"
+                fi
+                sleep 1
+                ;;
+            8) apt-get update -y >/dev/null 2>&1
+               apt-get install --only-upgrade -y caddy
+               ok "Caddy 已更新至 $(caddy_version)"
+               pause ;;
+            0|"") return ;;
+            *) err "无效"; sleep 1 ;;
+        esac
+    done
+}
+
+# =============================================================================
+# 菜单：脚本管理
+# =============================================================================
+menu_script() {
+    while :; do
+        clear; show_banner
+        sec "脚本管理"
+        echo "  当前版本: v${SCRIPT_VERSION}  作者: ${SCRIPT_AUTHOR}"
+        echo "  脚本路径: ${CA_SCRIPT_PATH}"
+        echo "  更新源:   ${SCRIPT_UPDATE_URL}"
+        hr
+        echo "  1) 更新脚本"
+        echo "  2) 一键卸载 (清除所有内容)"
+        echo "  0) 返回上一页"
+        hr
+        local c
+        read -rp "$(echo -e "${CYAN}请选择 [0-2]: ${NC}")" c
+        case "$c" in
+            1) update_script; pause ;;
+            2) do_uninstall ;;
+            0|"") return ;;
+            *) err "无效"; sleep 1 ;;
+        esac
+    done
+}
+
+update_script() {
+    msg "从 ${SCRIPT_UPDATE_URL} 下载新版..."
+    local tmp; tmp=$(mktemp)
+    if curl -fsSL "$SCRIPT_UPDATE_URL" -o "$tmp"; then
+        if head -n 1 "$tmp" | grep -q '^#!/.*bash'; then
+            install -m 755 "$tmp" "$CA_SCRIPT_PATH"
+            rm -f "$tmp"
+            ok "脚本已更新，请重新执行 ca"
+            exit 0
+        else
+            err "下载内容不是有效脚本"
+            rm -f "$tmp"
+        fi
+    else
+        err "下载失败，请检查 SCRIPT_UPDATE_URL"
+        rm -f "$tmp"
+    fi
+}
+
+do_uninstall() {
+    clear; show_banner
+    sec "${RED}一键卸载${NC}"
+    echo "  将删除: Caddy、配置、systemd 服务、日志、ca 命令"
+    echo
+    read -rp "$(echo -e "${YELLOW}确定卸载? 输入 ${BOLD}YES${NC}${YELLOW} 确认: ${NC}")" y
+    [[ "$y" == "YES" ]] || { warn "已取消"; pause; return; }
+    systemctl stop caddy 2>/dev/null
+    systemctl disable caddy 2>/dev/null
+    apt-get purge -y caddy >/dev/null 2>&1
+    rm -rf /etc/caddy "$CADDY_LOG_DIR" /var/lib/caddy
+    rm -f /etc/apt/sources.list.d/caddy-stable.list
+    rm -f "$CA_SCRIPT_PATH"
+    ok "卸载完成，再见"
+    exit 0
+}
+
+# =============================================================================
+# Banner & 主菜单
+# =============================================================================
+show_banner() {
+    local ver active domain
+    ver=$(caddy_version)
+    if systemctl is-active --quiet caddy; then
+        active="${GREEN}running${NC}"
+    else
+        active="${RED}stopped${NC}"
+    fi
+    if load_meta; then
+        domain="$DOMAIN"
+    else
+        domain="${YELLOW}未配置${NC}"
+    fi
+    local title="Caddy Script v${SCRIPT_VERSION} By ${SCRIPT_AUTHOR}"
+    local w side_eq bytes chars non_ascii_chars ascii_chars visual
+    w=$(term_width)
+    bytes=$(printf '%s' " ${title} " | wc -c)
+    chars=$(printf '%s' " ${title} " | wc -m)
+    non_ascii_chars=$(( (bytes - chars) / 2 ))
+    ascii_chars=$(( chars - non_ascii_chars ))
+    visual=$(( ascii_chars + non_ascii_chars * 2 ))
+    side_eq=$(( (w - visual) / 2 ))
+    (( side_eq < 3 )) && side_eq=3
+    local left right
+    left=$(printf "%${side_eq}s" '' | tr ' ' '=')
+    right=$(printf "%${side_eq}s" '' | tr ' ' '=')
+    echo -e "${GREEN}${left} ${BOLD}${title}${NC}${GREEN} ${right}${NC}"
+    echo
+    echo -e "  caddy:    ${ver:-未安装}"
+    echo
+    echo -e "  状态:     ${active}    域名: ${domain}"
+    echo
+    hr
+}
+
+main_menu() {
+    while :; do
+        clear; show_banner
+        echo
+        echo "  1. 添加配置"
+        echo
+        echo "  2. 更改配置"
+        echo
+        echo "  3. 查看配置"
+        echo
+        echo "  4. Caddy 服务管理"
+        echo
+        echo "  5. 脚本管理"
+        echo
+        echo "  0. 退出"
+        echo
+        hr
+        local c
+        read -rp "$(echo -e "${CYAN}请输入选项 [0-5]: ${NC}")" c
+        case "$c" in
+            1) menu_add ;;
+            2) menu_edit ;;
+            3) menu_view ;;
+            4) menu_caddy ;;
+            5) menu_script ;;
+            0|"") clear; exit 0 ;;
+            *) err "无效"; sleep 1 ;;
+        esac
+    done
+}
+
+first_install() {
+    clear
+    local title="Caddy Script v${SCRIPT_VERSION} By ${SCRIPT_AUTHOR}"
+    local w side_eq bytes chars non_ascii_chars ascii_chars visual
+    w=$(term_width)
+    bytes=$(printf '%s' " ${title} " | wc -c)
+    chars=$(printf '%s' " ${title} " | wc -m)
+    non_ascii_chars=$(( (bytes - chars) / 2 ))
+    ascii_chars=$(( chars - non_ascii_chars ))
+    visual=$(( ascii_chars + non_ascii_chars * 2 ))
+    side_eq=$(( (w - visual) / 2 ))
+    (( side_eq < 3 )) && side_eq=3
+    local left right
+    left=$(printf "%${side_eq}s" '' | tr ' ' '=')
+    right=$(printf "%${side_eq}s" '' | tr ' ' '=')
+    echo -e "${GREEN}${left} ${BOLD}${title}${NC}${GREEN} ${right}${NC}"
+    echo
+    sec "首次运行：开始安装"
+    check_debian
+    install_caddy
+    hr
+    ok "安装完成。以后输入 ${BOLD}ca${NC} 即可呼出菜单。"
+    hr
     pause
 }
 
-# ---------- 主循环 ----------
+main() {
+    need_root
+    if ! command -v caddy >/dev/null 2>&1; then
+        first_install
+    fi
+    main_menu
+}
 
-require_root
-ensure_caddy_installed
-
-while true; do
-    clear
-    echo "========================================"
-    echo "  Caddy 工具箱"
-    echo "========================================"
-    echo "  1) 生成 Caddyfile"
-    echo "  2) 查看配置"
-    echo "  3) 更改配置"
-    echo "  4) 更新 Caddy"
-    echo "  5) 卸载 Caddy"
-    echo "  0) 退出"
-    echo "========================================"
-    echo ""
-    read -p "请选择 [0-5]: " CHOICE
-
-    case $CHOICE in
-        1) generate_caddyfile ;;
-        2) view_caddyfile ;;
-        3) edit_caddyfile ;;
-        4) update_caddy ;;
-        5) uninstall_caddy ;;
-        0) exit 0 ;;
-        *) echo "无效选项，按回车重试..."; read ;;
-    esac
-done
+main "$@"

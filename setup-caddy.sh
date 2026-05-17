@@ -171,11 +171,11 @@ ${domain} {
 EOF
 
     cat > "$META_FILE" << EOF
-SVC_NAME=${svc}
-DOMAIN=${domain}
-BACKEND_IP=${ip}
-BACKEND_PORT=${port}
-TIMEOUT=${timeout}
+CADDY_SVC=${svc}
+CADDY_DOMAIN=${domain}
+CADDY_BACKEND_IP=${ip}
+CADDY_BACKEND_PORT=${port}
+CADDY_TIMEOUT=${timeout}
 EOF
 
     echo
@@ -202,6 +202,12 @@ load_meta() {
     [[ -f "$META_FILE" ]] || return 1
     # shellcheck disable=SC1090
     source "$META_FILE"
+    # 兼容旧字段名（早期版本写的 SVC_NAME / DOMAIN 等没前缀的）
+    [[ -z "${CADDY_SVC:-}"          && -n "${SVC_NAME:-}"     ]] && CADDY_SVC="$SVC_NAME"
+    [[ -z "${CADDY_DOMAIN:-}"       && -n "${DOMAIN:-}"       ]] && CADDY_DOMAIN="$DOMAIN"
+    [[ -z "${CADDY_BACKEND_IP:-}"   && -n "${BACKEND_IP:-}"   ]] && CADDY_BACKEND_IP="$BACKEND_IP"
+    [[ -z "${CADDY_BACKEND_PORT:-}" && -n "${BACKEND_PORT:-}" ]] && CADDY_BACKEND_PORT="$BACKEND_PORT"
+    [[ -z "${CADDY_TIMEOUT:-}"      && -n "${TIMEOUT:-}"      ]] && CADDY_TIMEOUT="$TIMEOUT"
     return 0
 }
 
@@ -215,9 +221,9 @@ menu_add() {
     if [[ -f "$CADDYFILE" ]] && load_meta; then
         echo -e "  ${YELLOW}已存在配置${NC}"
         echo
-        echo "  服务:     ${SVC_NAME}"
-        echo "  域名:     ${DOMAIN}"
-        echo "  后端:     ${BACKEND_IP}:${BACKEND_PORT}"
+        echo "  服务:     ${CADDY_SVC}"
+        echo "  域名:     ${CADDY_DOMAIN}"
+        echo "  后端:     ${CADDY_BACKEND_IP}:${CADDY_BACKEND_PORT}"
         echo
         echo -e "  ${YELLOW}继续将覆盖现有配置${NC}"
         hr
@@ -271,12 +277,12 @@ menu_view() {
         pause; return
     fi
 
-    echo "  服务名称: ${SVC_NAME}"
-    echo "  域名:     ${DOMAIN}"
-    echo "  后端 IP:  ${BACKEND_IP}"
-    echo "  后端端口: ${BACKEND_PORT}"
-    echo "  超时:     ${TIMEOUT}s"
-    echo "  日志:     ${CADDY_LOG_DIR}/${SVC_NAME}.log"
+    echo "  服务名称: ${CADDY_SVC}"
+    echo "  域名:     ${CADDY_DOMAIN}"
+    echo "  后端 IP:  ${CADDY_BACKEND_IP}"
+    echo "  后端端口: ${CADDY_BACKEND_PORT}"
+    echo "  超时:     ${CADDY_TIMEOUT}s"
+    echo "  日志:     ${CADDY_LOG_DIR}/${CADDY_SVC}.log"
     echo
     if systemctl is-active --quiet caddy; then
         echo -e "  状态:     ${GREEN}running${NC}"
@@ -297,11 +303,11 @@ menu_edit() {
             pause; return
         fi
 
-        echo "  1) 服务名称   ${SVC_NAME}"
-        echo "  2) 域名       ${DOMAIN}"
-        echo "  3) 后端 IP    ${BACKEND_IP}"
-        echo "  4) 后端端口   ${BACKEND_PORT}"
-        echo "  5) 超时       ${TIMEOUT}s"
+        echo "  1) 服务名称   ${CADDY_SVC}"
+        echo "  2) 域名       ${CADDY_DOMAIN}"
+        echo "  3) 后端 IP    ${CADDY_BACKEND_IP}"
+        echo "  4) 后端端口   ${CADDY_BACKEND_PORT}"
+        echo "  5) 超时       ${CADDY_TIMEOUT}s"
         echo "  0) 返回上一页"
         hr
         local c new
@@ -309,36 +315,36 @@ menu_edit() {
         case "$c" in
             0|"") return ;;
             1)
-                read -rp "$(echo -e "${CYAN}服务名称 [${NC}${SVC_NAME}${CYAN}]: ${NC}")" new
-                SVC_NAME="${new:-$SVC_NAME}"
+                read -rp "$(echo -e "${CYAN}服务名称 [${NC}${CADDY_SVC}${CYAN}]: ${NC}")" new
+                CADDY_SVC="${new:-$CADDY_SVC}"
                 ;;
             2)
-                read -rp "$(echo -e "${CYAN}域名 [${NC}${DOMAIN}${CYAN}]: ${NC}")" new
-                DOMAIN="${new:-$DOMAIN}"
+                read -rp "$(echo -e "${CYAN}域名 [${NC}${CADDY_DOMAIN}${CYAN}]: ${NC}")" new
+                CADDY_DOMAIN="${new:-$CADDY_DOMAIN}"
                 ;;
             3)
-                read -rp "$(echo -e "${CYAN}后端 IP [${NC}${BACKEND_IP}${CYAN}]: ${NC}")" new
-                BACKEND_IP="${new:-$BACKEND_IP}"
+                read -rp "$(echo -e "${CYAN}后端 IP [${NC}${CADDY_BACKEND_IP}${CYAN}]: ${NC}")" new
+                CADDY_BACKEND_IP="${new:-$CADDY_BACKEND_IP}"
                 ;;
             4)
-                read -rp "$(echo -e "${CYAN}后端端口 [${NC}${BACKEND_PORT}${CYAN}]: ${NC}")" new
-                new="${new:-$BACKEND_PORT}"
-                if [[ "$new" != "$BACKEND_PORT" ]]; then
+                read -rp "$(echo -e "${CYAN}后端端口 [${NC}${CADDY_BACKEND_PORT}${CYAN}]: ${NC}")" new
+                new="${new:-$CADDY_BACKEND_PORT}"
+                if [[ "$new" != "$CADDY_BACKEND_PORT" ]]; then
                     echo
-                    if ! check_backend_port "$BACKEND_IP" "$new"; then
+                    if ! check_backend_port "$CADDY_BACKEND_IP" "$new"; then
                         pause; continue
                     fi
                 fi
-                BACKEND_PORT="$new"
+                CADDY_BACKEND_PORT="$new"
                 ;;
             5)
-                read -rp "$(echo -e "${CYAN}超时(秒) [${NC}${TIMEOUT}${CYAN}]: ${NC}")" new
-                TIMEOUT="${new:-$TIMEOUT}"
+                read -rp "$(echo -e "${CYAN}超时(秒) [${NC}${CADDY_TIMEOUT}${CYAN}]: ${NC}")" new
+                CADDY_TIMEOUT="${new:-$CADDY_TIMEOUT}"
                 ;;
             *) err "无效"; sleep 1; continue ;;
         esac
 
-        write_and_apply "$SVC_NAME" "$DOMAIN" "$BACKEND_IP" "$BACKEND_PORT" "$TIMEOUT"
+        write_and_apply "$CADDY_SVC" "$CADDY_DOMAIN" "$CADDY_BACKEND_IP" "$CADDY_BACKEND_PORT" "$CADDY_TIMEOUT"
         pause
     done
 }
@@ -352,7 +358,7 @@ view_log() {
         err "尚未生成配置，无可查看日志"
         return
     fi
-    local f="${CADDY_LOG_DIR}/${SVC_NAME}.log"
+    local f="${CADDY_LOG_DIR}/${CADDY_SVC}.log"
     if [[ -s "$f" ]]; then
         echo -e "  ${BLUE}>>> ${BOLD}${f}${NC}  (最近 ${n} 行)"
         echo
@@ -394,14 +400,14 @@ menu_caddy() {
             4) clear; systemctl status caddy --no-pager -l | head -n 30; pause ;;
             5) clear; view_log 50; pause ;;
             6) clear; echo "Ctrl+C 退出"
-               if load_meta && [[ -s "${CADDY_LOG_DIR}/${SVC_NAME}.log" ]]; then
-                   tail -f "${CADDY_LOG_DIR}/${SVC_NAME}.log"
+               if load_meta && [[ -s "${CADDY_LOG_DIR}/${CADDY_SVC}.log" ]]; then
+                   tail -f "${CADDY_LOG_DIR}/${CADDY_SVC}.log"
                else
                    journalctl -u caddy -f
                fi ;;
             7)
                 if load_meta; then
-                    : > "${CADDY_LOG_DIR}/${SVC_NAME}.log"
+                    : > "${CADDY_LOG_DIR}/${CADDY_SVC}.log"
                     ok "日志已清空"
                 else
                     err "无配置可清"
@@ -492,7 +498,7 @@ show_banner() {
         active="${RED}stopped${NC}"
     fi
     if load_meta; then
-        domain="$DOMAIN"
+        domain="$CADDY_DOMAIN"
     else
         domain="${YELLOW}未配置${NC}"
     fi

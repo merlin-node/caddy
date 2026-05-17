@@ -283,14 +283,6 @@ menu_view() {
     else
         echo -e "  状态:     ${RED}stopped${NC}"
     fi
-    hr
-    echo -e "  ${BLUE}>>> ${BOLD}${CADDYFILE}${NC}"
-    echo
-    if [[ -f "$CADDYFILE" ]]; then
-        sed 's/^/  /' "$CADDYFILE"
-    else
-        err "文件不存在"
-    fi
     pause
 }
 
